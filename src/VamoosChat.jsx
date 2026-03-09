@@ -26,93 +26,39 @@ async function vamoosRequest(method, path, body = null, params = null) {
   }
 }
 
-// ── Diagnostic tests ──────────────────────────────────────────────────────────
+// ── Diagnostic ────────────────────────────────────────────────────────────────
 async function runDiagnostic(setDiag) {
   setDiag({ running: true, results: [] });
   const results = [];
 
-  const add = (r) => {
-    results.push(r);
-    setDiag({ running: true, results: [...results] });
-  };
+  const add = (r) => { results.push(r); setDiag({ running: true, results: [...results] }); };
 
-  // Test 1: Can we reach the Netlify function at all?
+  // Test 1: Netlify function — list itineraries
   try {
     const url = `${window.location.origin}${FUNCTION_URL}?path=/itinerary&count=1`;
     const res = await fetch(url, { headers: { Accept: "application/json" } });
     const text = await res.text();
-    let data; try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 200) }; }
-    add({
-      label: "Netlify function",
-      desc: `GET ${FUNCTION_URL}?path=/itinerary`,
-      status: res.status,
-      ok: res.ok,
-      data,
-    });
+    let data; try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 300) }; }
+    add({ label: "List itineraries", desc: "GET /itinerary?count=1", status: res.status, ok: res.ok, data });
   } catch (err) {
-    add({ label: "Netlify function", desc: `GET ${FUNCTION_URL}?path=/itinerary`, status: 0, ok: false, error: err.message });
+    add({ label: "List itineraries", desc: "GET /itinerary?count=1", status: 0, ok: false, error: err.message });
   }
 
-  // Test 2: Is the function URL even resolving? (HEAD request)
+  // Test 2: Function exists?
   try {
     const res = await fetch(`${window.location.origin}${FUNCTION_URL}`, { method: "HEAD" });
-    add({
-      label: "Function exists?",
-      desc: `HEAD ${FUNCTION_URL}`,
-      status: res.status,
-      ok: res.status !== 404,
-      data: res.status === 404 ? { error: "Function not found — check netlify/functions/vamoos.js is deployed" } : { ok: true },
-    });
+    add({ label: "Function reachable", desc: `HEAD ${FUNCTION_URL}`, status: res.status, ok: res.status !== 404, data: { status: res.status } });
   } catch (err) {
-    add({ label: "Function exists?", desc: `HEAD ${FUNCTION_URL}`, status: 0, ok: false, error: err.message });
+    add({ label: "Function reachable", desc: `HEAD ${FUNCTION_URL}`, status: 0, ok: false, error: err.message });
   }
 
-  // Test 3: Direct Vamoos call (will 401 or CORS — but tells us which)
-  try {
-    const res = await fetch("https://live.vamoos.com/v3/itinerary?count=1", {
-      headers: {
-        "X-User-Access-Token": "lc98kyzju11Yz6BoZ5JQqh7iBQVeuQovzOjSl1Gj",
-        Accept: "application/json",
-      },
-    });
-    const text = await res.text();
-    let data; try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 200) }; }
-    add({
-      label: "Direct Vamoos (bypass function)",
-      desc: "GET https://live.vamoos.com/v3/itinerary",
-      status: res.status,
-      ok: res.ok,
-      data,
-      note: res.ok ? "✓ Direct works! CORS is allowed." : res.status === 401 ? "Auth failed direct too" : "Non-auth error",
-    });
-  } catch (err) {
-    add({
-      label: "Direct Vamoos (bypass function)",
-      desc: "GET https://live.vamoos.com/v3/itinerary",
-      status: 0,
-      ok: false,
-      error: err.message,
-      note: "CORS is blocking direct access — function proxy is needed",
-    });
-  }
-
-  // Test 4: What is window.location.origin?
-  add({
-    label: "App origin",
-    desc: "Where the app thinks it is running",
-    status: 200,
-    ok: true,
-    data: {
-      origin: window.location.origin,
-      href: window.location.href,
-      function_url: `${window.location.origin}${FUNCTION_URL}`,
-    },
-  });
+  // Test 3: App origin
+  add({ label: "App origin", desc: "Where the app is running", status: 200, ok: true, data: { origin: window.location.origin, function_url: `${window.location.origin}${FUNCTION_URL}` } });
 
   setDiag({ running: false, results });
 }
 
-// ── Intent parser ─────────────────────────────────────────────────────────────
+// ── Intent parser — itineraries only ─────────────────────────────────────────
 async function parseIntent(userMessage, history) {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -120,13 +66,20 @@ async function parseIntent(userMessage, history) {
     body: JSON.stringify({
       model: "claude-sonnet-4-20250514",
       max_tokens: 512,
-      system: `Intent parser for Vamoos. Operator: "${OPERATOR_CODE}". Respond ONLY with valid JSON.
+      system: `Intent parser for Vamoos itineraries. Operator: "${OPERATOR_CODE}".
+Respond ONLY with valid JSON — no markdown, no explanation.
 Format: { "action": "<action>", "params": { ...params } }
-Actions: list_itineraries, get_itinerary{reference_code}, list_pois, get_poi{id},
-lookup_flight{carrier_code,flight_number,departure_airport,arrival_airport,date},
-lookup_flight_legs{carrier_code,flight_number,date}, list_notification_templates,
-list_conversations, list_stays, get_conversations{reference_code},
-get_dnd_requests{reference_code}, unknown`,
+
+Actions:
+- list_itineraries: params can include: count, page, search, type, order_by, order, archived
+- get_itinerary: params must include: reference_code
+- unknown: no params
+
+Examples:
+"show my itineraries" -> { "action": "list_itineraries", "params": {} }
+"list 5 itineraries" -> { "action": "list_itineraries", "params": { "count": 5 } }
+"get itinerary ABC123" -> { "action": "get_itinerary", "params": { "reference_code": "ABC123" } }
+"show trip SmithRome25" -> { "action": "get_itinerary", "params": { "reference_code": "SmithRome25" } }`,
       messages: [...history, { role: "user", content: userMessage }],
     }),
   });
@@ -141,7 +94,7 @@ async function summarise(userMessage, apiResult, history) {
     ? apiResult.ok
       ? `API SUCCESS (HTTP ${apiResult.status}).\nData:\n${JSON.stringify(apiResult.data, null, 2)}`
       : `API FAILED (HTTP ${apiResult.status}).\nError: ${apiResult.error || JSON.stringify(apiResult.data)}`
-    : "No matching API action.";
+    : "No matching API action for this request.";
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -149,8 +102,11 @@ async function summarise(userMessage, apiResult, history) {
     body: JSON.stringify({
       model: "claude-sonnet-4-20250514",
       max_tokens: 1024,
-      system: `Vamoos assistant for operator "${OPERATOR_CODE}". Summarise the EXACT API data returned. If it failed, say so. NEVER invent data.`,
-      messages: [...history, { role: "user", content: `User: "${userMessage}"\n\n${payload}` }],
+      system: `You are a Vamoos travel assistant for operator "${OPERATOR_CODE}".
+You receive the EXACT data returned by the Vamoos API and summarise it clearly for the user.
+If the API failed, explain the error honestly — do NOT invent any itinerary names, codes, dates or other details.
+Format itinerary lists nicely. For a single itinerary, show key fields: reference code, type, departure date, return date, travellers.`,
+      messages: [...history, { role: "user", content: `User asked: "${userMessage}"\n\n${payload}` }],
     }),
   });
   const d = await res.json();
@@ -159,21 +115,14 @@ async function summarise(userMessage, apiResult, history) {
 
 // ── Execute ───────────────────────────────────────────────────────────────────
 async function executeAction(intent) {
-  const op = OPERATOR_CODE;
-  const p  = intent.params || {};
+  const p = intent.params || {};
   switch (intent.action) {
-    case "list_itineraries":            return vamoosRequest("GET", "/itinerary", null, p);
-    case "get_itinerary":               return vamoosRequest("GET", `/itinerary/${op}/${p.reference_code}`);
-    case "list_pois":                   return vamoosRequest("GET", "/poi", null, p);
-    case "get_poi":                     return vamoosRequest("GET", `/poi/${p.id}`);
-    case "lookup_flight":               return vamoosRequest("GET", `/flight/lookup/${p.carrier_code}/${p.flight_number}/${p.departure_airport}/${p.arrival_airport}/${p.date}`);
-    case "lookup_flight_legs":          return vamoosRequest("GET", `/flight/lookup_legs/${p.carrier_code}/${p.flight_number}/${p.date}`);
-    case "list_notification_templates": return vamoosRequest("GET", "/notification/list");
-    case "list_conversations":          return vamoosRequest("GET", "/messaging/conversations");
-    case "list_stays":                  return vamoosRequest("GET", "/itinerary/stays", null, p);
-    case "get_conversations":           return vamoosRequest("GET", `/itinerary/${op}/${p.reference_code}/messaging`);
-    case "get_dnd_requests":            return vamoosRequest("GET", `/itinerary/${op}/${p.reference_code}/dnd`);
-    default:                            return null;
+    case "list_itineraries":
+      return vamoosRequest("GET", "/itinerary", null, p);
+    case "get_itinerary":
+      return vamoosRequest("GET", `/itinerary/${OPERATOR_CODE}/${p.reference_code}`);
+    default:
+      return null;
   }
 }
 
@@ -227,16 +176,12 @@ function DiagPanel({ diag, onRun }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
         <div>
           <div style={{ color: "#d4af37", fontSize: 12, marginBottom: 3 }}>🔧 DIAGNOSTIC</div>
-          <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 10 }}>
-            Tests the Netlify function, direct API access, and app origin.
-            Share these results if still stuck.
-          </div>
+          <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 10 }}>Tests the Netlify function and Vamoos API connection.</div>
         </div>
         <button onClick={onRun} disabled={diag?.running} style={{
           background: "rgba(212,175,55,0.15)", border: "1px solid rgba(212,175,55,0.4)",
           borderRadius: 8, padding: "6px 16px", color: "#d4af37",
-          fontFamily: "monospace", fontSize: 11, cursor: "pointer", whiteSpace: "nowrap",
-          marginLeft: 16,
+          fontFamily: "monospace", fontSize: 11, cursor: "pointer", marginLeft: 16,
         }}>
           {diag?.running ? "Running…" : "Run Tests"}
         </button>
@@ -252,33 +197,16 @@ function DiagPanel({ diag, onRun }) {
           background: r.ok ? "rgba(76,175,80,0.07)" : "rgba(220,80,80,0.07)",
           border: `1px solid ${r.ok ? "rgba(76,175,80,0.25)" : "rgba(220,80,80,0.2)"}`,
         }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ color: r.ok ? "#4caf50" : "#ef5350", fontSize: 14 }}>{r.ok ? "✓" : "✗"}</span>
             <span style={{ color: r.ok ? "#4caf50" : "rgba(255,255,255,0.7)", fontWeight: "bold" }}>{r.label}</span>
             <span style={{ color: r.ok ? "#4caf50" : "#ef5350" }}>HTTP {r.status || "ERR"}</span>
           </div>
           <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10, marginTop: 3 }}>{r.desc}</div>
-          {r.note && <div style={{ color: "#f0c84a", fontSize: 10.5, marginTop: 4 }}>⚠ {r.note}</div>}
           {r.error && <div style={{ color: "#ef5350", fontSize: 10.5, marginTop: 4 }}>Error: {r.error}</div>}
           <RawToggle data={r.data || r.error} />
         </div>
       ))}
-
-      {diag && !diag.running && diag.results?.length > 0 && (
-        <div style={{
-          marginTop: 10, padding: "10px 12px", borderRadius: 8,
-          background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)",
-          color: "rgba(255,255,255,0.5)", fontSize: 10.5, lineHeight: 1.7,
-        }}>
-          <strong style={{ color: "rgba(255,255,255,0.7)" }}>How to read these results:</strong><br />
-          • <strong>Netlify function ✓</strong> = proxy is working, app should work<br />
-          • <strong>Netlify function ✗ 404</strong> = function file not deployed correctly<br />
-          • <strong>Netlify function ✗ 0/ERR</strong> = function URL not reachable at all<br />
-          • <strong>Direct Vamoos ✓</strong> = CORS is open, no proxy needed<br />
-          • <strong>Direct Vamoos ERR</strong> = CORS blocked, proxy is required<br />
-          Share these results and I can pinpoint the exact fix.
-        </div>
-      )}
     </div>
   );
 }
@@ -348,10 +276,10 @@ function Bubble({ msg }) {
 
 const SUGGESTIONS = [
   "List my itineraries",
-  "Show POIs in France",
-  "List notification templates",
-  "Show all conversations",
-  "List stays",
+  "Show first 5 itineraries",
+  "Search itineraries for Rome",
+  "Get itinerary SmithRome25",
+  "List archived itineraries",
 ];
 
 export default function VamoosChat() {
@@ -417,7 +345,6 @@ export default function VamoosChat() {
         backgroundImage: "radial-gradient(ellipse 80% 40% at 50% -5%,rgba(212,175,55,0.07) 0%,transparent 70%)",
         display: "flex", flexDirection: "column", alignItems: "center",
       }}>
-
         {/* Header */}
         <div style={{ width: "100%", maxWidth: 760, padding: "28px 24px 0", display: "flex", alignItems: "center", gap: 14, animation: "fadeUp 0.5s ease both" }}>
           <div style={{ width: 42, height: 42, borderRadius: 12, flexShrink: 0, background: "linear-gradient(135deg,#d4af37,#8b5e1a)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, boxShadow: "0 4px 20px rgba(212,175,55,0.3)" }}>✈</div>
@@ -427,7 +354,7 @@ export default function VamoosChat() {
               <span style={{ background: "linear-gradient(90deg,#d4af37,#f0c840,#d4af37)", backgroundSize: "200% auto", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", animation: "shimmer 3s linear infinite" }}>Concierge</span>
             </div>
             <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, marginTop: 2, color: "rgba(255,255,255,0.28)", letterSpacing: "0.1em", textTransform: "uppercase" }}>
-              serverless proxy · real data only
+              itineraries · real data only
             </div>
           </div>
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
@@ -437,12 +364,8 @@ export default function VamoosChat() {
               borderRadius: 8, padding: "4px 12px",
               color: showDiag ? "#d4af37" : "rgba(255,255,255,0.4)",
               fontFamily: "'DM Mono',monospace", fontSize: 10, cursor: "pointer",
-            }}>
-              🔧 diag
-            </button>
-            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 9, color: "rgba(255,255,255,0.2)", letterSpacing: "0.06em" }}>
-              v7.3 · 2026-03-09
-            </div>
+            }}>🔧 diag</button>
+            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 9, color: "rgba(255,255,255,0.2)" }}>v8.0 · 2026-03-09</div>
             <div style={{ background: "rgba(212,175,55,0.08)", border: "1px solid rgba(212,175,55,0.22)", borderRadius: 20, padding: "4px 14px", display: "flex", alignItems: "center", gap: 7, fontFamily: "'DM Mono',monospace", fontSize: 10, color: "#d4af37" }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#4caf50", boxShadow: "0 0 6px #4caf50" }} />
               {OPERATOR_CODE}
@@ -458,13 +381,10 @@ export default function VamoosChat() {
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", paddingTop: 50, animation: "fadeUp 0.7s ease both" }}>
               <div style={{ fontSize: 56, marginBottom: 20, animation: "float 4s ease-in-out infinite", filter: "drop-shadow(0 8px 24px rgba(212,175,55,0.35))" }}>🌍</div>
               <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 27, color: "rgba(255,255,255,0.8)", marginBottom: 8 }}>What would you like to know?</div>
-              <div style={{ fontSize: 13, fontStyle: "italic", color: "rgba(255,255,255,0.3)", marginBottom: 14, textAlign: "center", fontFamily: "Georgia,serif" }}>
-                Serverless function proxies API calls — Claude explains real data only.
+              <div style={{ fontSize: 13, fontStyle: "italic", color: "rgba(255,255,255,0.3)", marginBottom: 28, textAlign: "center", fontFamily: "Georgia,serif" }}>
+                Ask about your Vamoos itineraries — real data, no invention.
               </div>
-              <div style={{ marginBottom: 28, padding: "7px 14px", borderRadius: 8, background: "rgba(212,175,55,0.07)", border: "1px solid rgba(212,175,55,0.18)", color: "rgba(212,175,55,0.6)", fontSize: 10.5, fontFamily: "'DM Mono',monospace", textAlign: "center" }}>
-                Having issues? Click 🔧 diag → Run Tests and share the results.
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", maxWidth: 480 }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", maxWidth: 500 }}>
                 {SUGGESTIONS.map((s, i) => (
                   <button key={i} onClick={() => send(s)} style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 20, padding: "8px 16px", fontFamily: "Georgia,serif", fontStyle: "italic", fontSize: 13, color: "rgba(255,255,255,0.5)", cursor: "pointer", transition: "all 0.2s" }}
                     onMouseEnter={e => Object.assign(e.target.style, { background: "rgba(212,175,55,0.1)", borderColor: "rgba(212,175,55,0.35)", color: "#d4af37" })}
@@ -479,7 +399,7 @@ export default function VamoosChat() {
               {loading && (
                 <div style={{ display: "flex", alignItems: "center", gap: 12, paddingLeft: 42 }}>
                   <Dots />
-                  <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.3)", letterSpacing: "0.05em" }}>{statusText}</span>
+                  <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: "rgba(255,255,255,0.3)" }}>{statusText}</span>
                 </div>
               )}
               <div ref={bottomRef} />
@@ -491,7 +411,7 @@ export default function VamoosChat() {
         <div style={{ width: "100%", maxWidth: 760, padding: "16px 24px 28px", background: "linear-gradient(to top,#0d0d0d 75%,transparent)", position: "sticky", bottom: 0 }}>
           {!isEmpty && <div style={{ height: 1, marginBottom: 14, background: "linear-gradient(90deg,transparent,rgba(212,175,55,0.18),transparent)" }} />}
           <div style={{ display: "flex", alignItems: "flex-end", gap: 10, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 24, padding: "12px 12px 12px 20px" }}>
-            <textarea ref={taRef} rows={1} placeholder="Ask about itineraries, flights, POIs…" value={input} disabled={loading}
+            <textarea ref={taRef} rows={1} placeholder="Ask about your itineraries…" value={input} disabled={loading}
               onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px"; }}
               onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
               style={{ flex: 1, background: "none", border: "none", outline: "none", color: "rgba(255,255,255,0.85)", fontFamily: "Georgia,serif", fontSize: 14, lineHeight: 1.5, resize: "none", minHeight: 24, maxHeight: 120 }}

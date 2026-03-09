@@ -1,18 +1,24 @@
 {
-  "name": "react",
-  "version": "0.0.0",
+  "name": "vamoos-concierge",
+  "version": "1.0.0",
   "private": true,
-  "dependencies": {
-    "react": "^18.1.0",
-    "react-dom": "^18.1.0"
-  },
+  "type": "module",
   "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build",
-    "test": "react-scripts test --env=jsdom",
-    "eject": "react-scripts eject"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
-    "react-scripts": "latest"
-  }
+    "@vitejs/plugin-react": "^4.0.0",
+    "vite": "^4.4.0"
+  },
+  "browserslist": [
+    ">0.2%",
+    "not dead",
+    "not op_mini all"
+  ]
 }

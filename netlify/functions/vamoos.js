@@ -1,5 +1,5 @@
 // netlify/functions/vamoos.js
-// v8.4 - omits Content-Type header on GET requests
+// v8.7 - X-Operator-Code: alisdair
 
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") {
@@ -28,10 +28,9 @@ export const handler = async (event) => {
   try {
     const headers = {
       "X-User-Access-Token": "lc98kyzju11Yz6BoZ5JQqh7iBQVeuQovzOjSl1Gj",
-      "operator_code": "alisdair",
+      "X-Operator-Code": "alisdair",
       "Accept": "application/json",
     };
-    // Only set Content-Type for requests with a body
     if (event.httpMethod !== "GET" && event.httpMethod !== "HEAD") {
       headers["Content-Type"] = "application/json";
     }

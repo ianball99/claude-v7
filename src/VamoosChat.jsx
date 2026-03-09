@@ -1,14 +1,10 @@
 import React, { useState, useRef, useEffect } from "react";
 
-// All Vamoos API calls go through the Netlify function which adds
-// the X-User-Access-Token header server-side. Works both locally
-// (netlify dev) and when deployed.
-const OPERATOR_CODE  = "alisdair";
-const FUNCTION_URL   = "/.netlify/functions/vamoos";
+const OPERATOR_CODE = "alisdair";
+const FUNCTION_URL  = "/.netlify/functions/vamoos";
 
-// ── Core fetch ────────────────────────────────────────────────────────────────
+// ── Core fetch via Netlify function ───────────────────────────────────────────
 async function vamoosRequest(method, path, body = null, params = null) {
-  // Pass the Vamoos path + any params to our serverless function
   const url = new URL(FUNCTION_URL, window.location.origin);
   url.searchParams.set("path", path);
   if (params) {
@@ -16,7 +12,6 @@ async function vamoosRequest(method, path, body = null, params = null) {
       if (v != null) url.searchParams.append(k, String(v));
     });
   }
-
   try {
     const res = await fetch(url.toString(), {
       method,
@@ -29,6 +24,92 @@ async function vamoosRequest(method, path, body = null, params = null) {
   } catch (err) {
     return { ok: false, status: 0, error: err.message };
   }
+}
+
+// ── Diagnostic tests ──────────────────────────────────────────────────────────
+async function runDiagnostic(setDiag) {
+  setDiag({ running: true, results: [] });
+  const results = [];
+
+  const add = (r) => {
+    results.push(r);
+    setDiag({ running: true, results: [...results] });
+  };
+
+  // Test 1: Can we reach the Netlify function at all?
+  try {
+    const url = `${window.location.origin}${FUNCTION_URL}?path=/itinerary&count=1`;
+    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    const text = await res.text();
+    let data; try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 200) }; }
+    add({
+      label: "Netlify function",
+      desc: `GET ${FUNCTION_URL}?path=/itinerary`,
+      status: res.status,
+      ok: res.ok,
+      data,
+    });
+  } catch (err) {
+    add({ label: "Netlify function", desc: `GET ${FUNCTION_URL}?path=/itinerary`, status: 0, ok: false, error: err.message });
+  }
+
+  // Test 2: Is the function URL even resolving? (HEAD request)
+  try {
+    const res = await fetch(`${window.location.origin}${FUNCTION_URL}`, { method: "HEAD" });
+    add({
+      label: "Function exists?",
+      desc: `HEAD ${FUNCTION_URL}`,
+      status: res.status,
+      ok: res.status !== 404,
+      data: res.status === 404 ? { error: "Function not found — check netlify/functions/vamoos.js is deployed" } : { ok: true },
+    });
+  } catch (err) {
+    add({ label: "Function exists?", desc: `HEAD ${FUNCTION_URL}`, status: 0, ok: false, error: err.message });
+  }
+
+  // Test 3: Direct Vamoos call (will 401 or CORS — but tells us which)
+  try {
+    const res = await fetch("https://live.vamoos.com/v3/itinerary?count=1", {
+      headers: {
+        "X-User-Access-Token": "lc98kyzju11Yz6BoZ5JQqh7iBQVeuQovzOjSl1Gj",
+        Accept: "application/json",
+      },
+    });
+    const text = await res.text();
+    let data; try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 200) }; }
+    add({
+      label: "Direct Vamoos (bypass function)",
+      desc: "GET https://live.vamoos.com/v3/itinerary",
+      status: res.status,
+      ok: res.ok,
+      data,
+      note: res.ok ? "✓ Direct works! CORS is allowed." : res.status === 401 ? "Auth failed direct too" : "Non-auth error",
+    });
+  } catch (err) {
+    add({
+      label: "Direct Vamoos (bypass function)",
+      desc: "GET https://live.vamoos.com/v3/itinerary",
+      status: 0,
+      ok: false,
+      error: err.message,
+      note: "CORS is blocking direct access — function proxy is needed",
+    });
+  }
+
+  // Test 4: What is window.location.origin?
+  add({
+    label: "App origin",
+    desc: "Where the app thinks it is running",
+    status: 200,
+    ok: true,
+    data: {
+      origin: window.location.origin,
+      href: window.location.href,
+      function_url: `${window.location.origin}${FUNCTION_URL}`,
+    },
+  });
+
+  setDiag({ running: false, results });
 }
 
 // ── Intent parser ─────────────────────────────────────────────────────────────
@@ -96,7 +177,7 @@ async function executeAction(intent) {
   }
 }
 
-// ── UI ────────────────────────────────────────────────────────────────────────
+// ── UI components ─────────────────────────────────────────────────────────────
 function Dots() {
   return (
     <div style={{ display: "flex", gap: 5 }}>
@@ -113,24 +194,90 @@ function Dots() {
 function RawToggle({ data }) {
   const [open, setOpen] = useState(false);
   return (
-    <div style={{ marginTop: 8 }}>
+    <div style={{ marginTop: 6 }}>
       <button onClick={() => setOpen(o => !o)} style={{
         background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
         borderRadius: 6, padding: "2px 10px", color: "rgba(255,255,255,0.35)",
         fontFamily: "monospace", fontSize: 10, cursor: "pointer",
       }}>
-        {open ? "▲ hide raw" : "▼ raw response"}
+        {open ? "▲ hide" : "▼ details"}
       </button>
       {open && (
         <pre style={{
           marginTop: 6, padding: 10, borderRadius: 8,
-          background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.07)",
+          background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.07)",
           color: "#7ec8a0", fontFamily: "monospace", fontSize: 10.5,
           lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-all",
-          maxHeight: 300, overflowY: "auto",
+          maxHeight: 200, overflowY: "auto",
         }}>
           {JSON.stringify(data, null, 2)}
         </pre>
+      )}
+    </div>
+  );
+}
+
+function DiagPanel({ diag, onRun }) {
+  return (
+    <div style={{
+      margin: "12px 24px", padding: 16, borderRadius: 12,
+      background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.1)",
+      fontFamily: "monospace", fontSize: 11,
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <div>
+          <div style={{ color: "#d4af37", fontSize: 12, marginBottom: 3 }}>🔧 DIAGNOSTIC</div>
+          <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 10 }}>
+            Tests the Netlify function, direct API access, and app origin.
+            Share these results if still stuck.
+          </div>
+        </div>
+        <button onClick={onRun} disabled={diag?.running} style={{
+          background: "rgba(212,175,55,0.15)", border: "1px solid rgba(212,175,55,0.4)",
+          borderRadius: 8, padding: "6px 16px", color: "#d4af37",
+          fontFamily: "monospace", fontSize: 11, cursor: "pointer", whiteSpace: "nowrap",
+          marginLeft: 16,
+        }}>
+          {diag?.running ? "Running…" : "Run Tests"}
+        </button>
+      </div>
+
+      {!diag?.results?.length && !diag?.running && (
+        <div style={{ color: "rgba(255,255,255,0.25)" }}>Press Run Tests to diagnose the connection.</div>
+      )}
+
+      {diag?.results?.map((r, i) => (
+        <div key={i} style={{
+          marginBottom: 8, padding: "8px 12px", borderRadius: 8,
+          background: r.ok ? "rgba(76,175,80,0.07)" : "rgba(220,80,80,0.07)",
+          border: `1px solid ${r.ok ? "rgba(76,175,80,0.25)" : "rgba(220,80,80,0.2)"}`,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ color: r.ok ? "#4caf50" : "#ef5350", fontSize: 14 }}>{r.ok ? "✓" : "✗"}</span>
+            <span style={{ color: r.ok ? "#4caf50" : "rgba(255,255,255,0.7)", fontWeight: "bold" }}>{r.label}</span>
+            <span style={{ color: r.ok ? "#4caf50" : "#ef5350" }}>HTTP {r.status || "ERR"}</span>
+          </div>
+          <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10, marginTop: 3 }}>{r.desc}</div>
+          {r.note && <div style={{ color: "#f0c84a", fontSize: 10.5, marginTop: 4 }}>⚠ {r.note}</div>}
+          {r.error && <div style={{ color: "#ef5350", fontSize: 10.5, marginTop: 4 }}>Error: {r.error}</div>}
+          <RawToggle data={r.data || r.error} />
+        </div>
+      ))}
+
+      {diag && !diag.running && diag.results?.length > 0 && (
+        <div style={{
+          marginTop: 10, padding: "10px 12px", borderRadius: 8,
+          background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)",
+          color: "rgba(255,255,255,0.5)", fontSize: 10.5, lineHeight: 1.7,
+        }}>
+          <strong style={{ color: "rgba(255,255,255,0.7)" }}>How to read these results:</strong><br />
+          • <strong>Netlify function ✓</strong> = proxy is working, app should work<br />
+          • <strong>Netlify function ✗ 404</strong> = function file not deployed correctly<br />
+          • <strong>Netlify function ✗ 0/ERR</strong> = function URL not reachable at all<br />
+          • <strong>Direct Vamoos ✓</strong> = CORS is open, no proxy needed<br />
+          • <strong>Direct Vamoos ERR</strong> = CORS blocked, proxy is required<br />
+          Share these results and I can pinpoint the exact fix.
+        </div>
       )}
     </div>
   );
@@ -213,6 +360,8 @@ export default function VamoosChat() {
   const [input, setInput]           = useState("");
   const [loading, setLoading]       = useState(false);
   const [statusText, setStatusText] = useState("");
+  const [showDiag, setShowDiag]     = useState(false);
+  const [diag, setDiag]             = useState(null);
   const bottomRef = useRef(null);
   const taRef     = useRef(null);
 
@@ -268,6 +417,7 @@ export default function VamoosChat() {
         backgroundImage: "radial-gradient(ellipse 80% 40% at 50% -5%,rgba(212,175,55,0.07) 0%,transparent 70%)",
         display: "flex", flexDirection: "column", alignItems: "center",
       }}>
+
         {/* Header */}
         <div style={{ width: "100%", maxWidth: 760, padding: "28px 24px 0", display: "flex", alignItems: "center", gap: 14, animation: "fadeUp 0.5s ease both" }}>
           <div style={{ width: 42, height: 42, borderRadius: 12, flexShrink: 0, background: "linear-gradient(135deg,#d4af37,#8b5e1a)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, boxShadow: "0 4px 20px rgba(212,175,55,0.3)" }}>✈</div>
@@ -281,8 +431,17 @@ export default function VamoosChat() {
             </div>
           </div>
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+            <button onClick={() => setShowDiag(d => !d)} style={{
+              background: showDiag ? "rgba(212,175,55,0.15)" : "rgba(255,255,255,0.05)",
+              border: `1px solid ${showDiag ? "rgba(212,175,55,0.4)" : "rgba(255,255,255,0.12)"}`,
+              borderRadius: 8, padding: "4px 12px",
+              color: showDiag ? "#d4af37" : "rgba(255,255,255,0.4)",
+              fontFamily: "'DM Mono',monospace", fontSize: 10, cursor: "pointer",
+            }}>
+              🔧 diag
+            </button>
             <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 9, color: "rgba(255,255,255,0.2)", letterSpacing: "0.06em" }}>
-              v7 · 2026-03-09
+              v7.3 · 2026-03-09
             </div>
             <div style={{ background: "rgba(212,175,55,0.08)", border: "1px solid rgba(212,175,55,0.22)", borderRadius: 20, padding: "4px 14px", display: "flex", alignItems: "center", gap: 7, fontFamily: "'DM Mono',monospace", fontSize: 10, color: "#d4af37" }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#4caf50", boxShadow: "0 0 6px #4caf50" }} />
@@ -291,14 +450,19 @@ export default function VamoosChat() {
           </div>
         </div>
 
+        {showDiag && <DiagPanel diag={diag} onRun={() => runDiagnostic(setDiag)} />}
+
         {/* Chat */}
         <div style={{ width: "100%", maxWidth: 760, flex: 1, padding: "24px 24px 0", display: "flex", flexDirection: "column", gap: 16 }}>
-          {isEmpty ? (
+          {isEmpty && !showDiag ? (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", paddingTop: 50, animation: "fadeUp 0.7s ease both" }}>
               <div style={{ fontSize: 56, marginBottom: 20, animation: "float 4s ease-in-out infinite", filter: "drop-shadow(0 8px 24px rgba(212,175,55,0.35))" }}>🌍</div>
               <div style={{ fontFamily: "'Cormorant Garamond',serif", fontWeight: 300, fontSize: 27, color: "rgba(255,255,255,0.8)", marginBottom: 8 }}>What would you like to know?</div>
-              <div style={{ fontSize: 13, fontStyle: "italic", color: "rgba(255,255,255,0.3)", marginBottom: 28, textAlign: "center", fontFamily: "Georgia,serif" }}>
-                Serverless function proxies API calls — no CORS, real data only.
+              <div style={{ fontSize: 13, fontStyle: "italic", color: "rgba(255,255,255,0.3)", marginBottom: 14, textAlign: "center", fontFamily: "Georgia,serif" }}>
+                Serverless function proxies API calls — Claude explains real data only.
+              </div>
+              <div style={{ marginBottom: 28, padding: "7px 14px", borderRadius: 8, background: "rgba(212,175,55,0.07)", border: "1px solid rgba(212,175,55,0.18)", color: "rgba(212,175,55,0.6)", fontSize: 10.5, fontFamily: "'DM Mono',monospace", textAlign: "center" }}>
+                Having issues? Click 🔧 diag → Run Tests and share the results.
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", maxWidth: 480 }}>
                 {SUGGESTIONS.map((s, i) => (

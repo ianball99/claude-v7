@@ -16,7 +16,17 @@ async function claudeCall(system, messages, max_tokens = 1024) {
       messages,
     }),
   });
-  const d = await res.json();
+  const text = await res.text();
+  if (!text || !text.trim()) {
+    throw new Error(`Claude function returned empty response (HTTP ${res.status}). Check ANTHROPIC_API_KEY is set in Netlify environment variables.`);
+  }
+  let d;
+  try { d = JSON.parse(text); } catch {
+    throw new Error(`Claude function returned non-JSON (HTTP ${res.status}): ${text.slice(0, 200)}`);
+  }
+  if (!res.ok) {
+    throw new Error(`Claude API error (HTTP ${res.status}): ${d?.error?.message || text.slice(0, 200)}`);
+  }
   return d?.content?.[0]?.text || "";
 }
 
@@ -370,7 +380,7 @@ export default function VamoosChat() {
               color: showDiag ? "#d4af37" : "rgba(255,255,255,0.4)",
               fontFamily: "'DM Mono',monospace", fontSize: 10, cursor: "pointer",
             }}>🔧 diag</button>
-            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 9, color: "rgba(255,255,255,0.2)" }}>v8.1 · 2026-03-09</div>
+            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 9, color: "rgba(255,255,255,0.2)" }}>v8.2 · 2026-03-09</div>
             <div style={{ background: "rgba(212,175,55,0.08)", border: "1px solid rgba(212,175,55,0.22)", borderRadius: 20, padding: "4px 14px", display: "flex", alignItems: "center", gap: 7, fontFamily: "'DM Mono',monospace", fontSize: 10, color: "#d4af37" }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#4caf50", boxShadow: "0 0 6px #4caf50" }} />
               {OPERATOR_CODE}
